@@ -1,2 +1,2 @@
 # Advanced_modelling
-Exploring classification and regression models to predict student academic outcomes and first-year grades based on socioeconomic and institutional data.
+This project aims to explore two key areas of predictive modeling: classification and advanced regression, applied to student academic performance. In the classification section our goal is to predict the academic status (graduate, dropout, or enrolled) of students based on various socioeconomic, academic, and institutional factors. This could be helpful to identify early indicators of student success or risk of dropout. On its part, the regression analysis will focus on predicting the average grade of students during their first year of university, using the information available in our dataset.
