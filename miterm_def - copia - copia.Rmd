@@ -1,0 +1,616 @@
+---
+title: "Midterm Project - Advanced Modelling"
+author: "Candela Gómez"
+date: "2025-02-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction and research question
+
+The European Higher Education Sector Observatory (EHESO) provides a comprehensive dataset on Higher Education Institutions (HEI) across Europe, offering valuable insights into various aspects of the sector. This study aims to leverage advanced modeling techniques, specifically Principal Component Analysis (PCA) and clustering, to analyze this dataset and address the following research question:
+
+Can we identify patterns or categories of higher education institutions based on their academic profile? How do these categories compare to the standard classification of higher education institutions in Europe?
+
+For answering this question we will focus on several key variables that capture different aspects of European HEI. While we may need to exclude some of them during the process, our initial variables of interest can be categorized into five main groups:
+
+1.  **Student population variables:**\
+    These variables measure the number of students enrolled at different levels of the education system, including undergraduate (ISCED 5), master's (ISCED 6), advanced programs (ISCED 7), and doctoral studies (ISCED 8).
+
+2.  **Gender variables in student and academic population:**\
+    These variables reflect the proportion of women in various levels of higher education, both as students and academic staff.
+
+3.  **Internationalization variables:**\
+    These indicators capture the international mobility and diversity within universities, including the share of foreign students and Erasmus program participation.
+
+4.  **Graduate variables:**\
+    These variables measure the number of graduates at different educational levels, providing insights into the output of the educational process.
+
+5.  **Specialization and academic intensity variables:**\
+    These variables indicate the academic intensity and specialization within the educational system, including PhD intensity and the Herfindahl index.
+
+## Libraries and data load
+
+```{r}
+# Load libraries
+library(readxl)
+library(dplyr)
+library(DataExplorer)
+library(mice)
+library(ggplot2)
+library(tidyr)
+library(e1071)
+library(reshape2)
+library(factoextra)
+library(cluster)
+library(mclust)
+library(leaflet) 
+
+# Leer el dataset
+eter_data <- read_excel("./eter-export-2021.xlsx")
+```
+
+## Data preprocessing
+
+The first thing we notice is that most of the variables in our data set are categorized as character even though they are ment to be numeric. We convert them.
+
+```{r}
+
+str(eter_data)
+
+eter_data <- eter_data %>%  
+  mutate(across(c("Total Current expenditure (PPP)", "Total Current revenues (PPP)", "Total academic personnel (FTE)", "Total personnel (FTE)", "Total students enrolled at ISCED 5", "Total students enrolled at ISCED 6", "Total students enrolled at ISCED 7", "Total students enrolled ISCED 7 long degree", "Total students enrolled ISCED 5-7", "Total graduates at ISCED 5", "Total graduates at ISCED 6", "Total graduates at ISCED 7", "Total graduates at ISCED 7 long degree", "Total graduates ISCED 5-7", "Total students enrolled at ISCED 8", "Total graduates at ISCED 8", "Share of women students ISCED 5-7", "Share of women academic staff", "Share of foreigners students ISCED 5-7", "Herfindahl index students ISCED 5-7", "PhD intensity", "Erasmus total incoming students", "Erasmus total outgoing students", "Geographic coordinates - latitude", "Geographic coordinates - longitude", "Lowest degree delivered", "Highest degree delivered", "Distance education institution"), as.numeric))
+```
+
+### Data cleaning
+
+In the process of handling missing values, we adopted a strategic approach guided by our objective and the recommendations provided in the ETER (European Tertiary Education Register) handbook. Our initial dataset comprised 42 variables and 2.963 observations. Upon closer examination, we observed that many variables had more than 40% missing values, which could significantly impact the reliability of our analysis.
+
+To address this issue, we implemented a two-step approach. First, we removed the rows with more than 40% missing data across all variables. This decision was made to ensure that our analysis would be based on institutions with a substantial amount of available information, thus improving the overall quality and reliability of our results. Secondly, we carefully considered the ETER handbook's recommendation regarding data availability. The handbook specifically notes that some countries only provide data on income and expenditure about two-thirds of the time, and R&D expenditure data only half the time. Following this guidance, we focused our analysis on areas with good data coverage.
+
+```{r}
+
+# Delte rows with more than 40% of NAs
+data_cleaned <- eter_data %>%   
+  filter(rowMeans(is.na(.)) <= 0.4)
+
+plot_missing(data_cleaned) # We realize those with most NAS are not the ones we are interested in for answering our question
+
+# Delte columns with more than 40% of NAs
+data_cleaned <- data_cleaned %>% 
+  select(where(~ mean(is.na(.)) <= 0.4))
+
+plot_missing(data_cleaned)
+```
+
+### Data imputation
+
+Now, we are going to perform imputations on all numerical variables in the dataset using the Random Forest method. By considering all numerical variables, we leverage the full range of information available, potentially uncovering more comprehensive patterns and relationships within the data. The Random Forest method was chosen for its ability to handle complex interactions between variables and its robustness to outliers. This approach aligns with best practices in exploratory research, allowing us to retain as much data as possible in the early stages of analysis.
+
+```{r}
+
+# Select numeric variables
+numeric_vars <- data_cleaned %>% select(where(is.numeric))
+
+# Verify missing values
+colSums(is.na(numeric_vars))
+
+# Random forest imputation
+imp_data <- mice(numeric_vars, method = "rf", m = 5, maxit = 10)
+
+# Extract imputed dataset
+numeric_vars_imp <- complete(imp_data, 1)
+
+# Verify  there are no missing values
+colSums(is.na(numeric_vars_imp))
+
+# Replace the imputed variables in the original dataset
+data_cleaned[, colnames(numeric_vars)] <- numeric_vars_imp
+```
+
+We will rename the name of our variables of interest to make our dataset more intuitive and easier to work with.
+
+```{r}
+data_cleaned <- data_cleaned %>%
+  rename(
+    # Student population variables
+    undergrad_enrollment      = `Total students enrolled at ISCED 5`,
+    masters_enrollment        = `Total students enrolled at ISCED 6`,
+    advanced_enrollment       = `Total students enrolled at ISCED 7`,
+    long_advanced_enrollment  = `Total students enrolled ISCED 7 long degree`,
+    total_enrollment_5_7      = `Total students enrolled ISCED 5-7`,
+    doctoral_enrollment       = `Total students enrolled at ISCED 8`,
+    
+    # Gender related variables
+    female_students_ratio     = `Share of women students ISCED 5-7`,
+    female_staff_ratio        = `Share of women academic staff`,
+    
+    # Internationalization variables
+    international_student_share = `Share of foreigners students ISCED 5-7`,
+    erasmus_incoming          = `Erasmus total incoming students`,
+    erasmus_outgoing          = `Erasmus total outgoing students`,
+    
+    # Graduate count variables
+    undergrad_graduates       = `Total graduates at ISCED 5`,
+    masters_graduates         = `Total graduates at ISCED 6`,
+    advanced_graduates        = `Total graduates at ISCED 7`,
+    long_advanced_graduates   = `Total graduates at ISCED 7 long degree`,
+    total_graduates_5_7       = `Total graduates ISCED 5-7`,
+    doctoral_graduates        = `Total graduates at ISCED 8`,
+    
+    # Specialization and academic intensity variables
+    phd_intensity             = `PhD intensity`,
+    herfindahl_index          = `Herfindahl index students ISCED 5-7`
+  )
+```
+
+## Exploratory Descriptive Analysis
+
+We will make an exploratory descriptive analysis of our variables of interest.
+
+```{r}
+
+# We select our variables of interest
+selected_vars <- data_cleaned[, c(
+  "undergrad_enrollment",
+  "masters_enrollment",
+  "advanced_enrollment",
+  "long_advanced_enrollment",
+  "doctoral_enrollment",
+  "female_students_ratio",
+  "female_staff_ratio",
+  "international_student_share",
+  "erasmus_incoming",
+  "erasmus_outgoing",
+  "undergrad_graduates",
+  "masters_graduates",
+  "advanced_graduates",
+  "long_advanced_graduates",
+  "doctoral_graduates",
+  "phd_intensity",
+  "herfindahl_index"
+)]
+
+# Visulaizing a histogram for our variables of interest
+selected_vars |>
+  gather(key = "Variable", value = "Value") |>
+  ggplot(aes(x = Value)) +
+  geom_histogram(bins = 30) +
+  facet_wrap(~ Variable, scales = "free")
+
+```
+
+Upon examining the distributions of our variables, we observed variations in their shapes and skewness. Most enrollment and graduate-related variables exhibit strong right-skewed (positively skewed) distributions, with the majority of values concentrated near zero and long tails extending towards higher values. In contrast, variables such as female_staff_ratio and female_students_ratio appear to follow a more normal distribution. The Herfindahl index and international student share show slight skewness but are distributed across their range, while PhD intensity is highly skewed towards zero. Total enrollment and total graduates demonstrate extreme right skewness.
+
+### Data transformation
+
+These observations highlight the need for transformations to approximate normal distributions for many of our variables. This step is crucial for the successful application of Principal Component Analysis and clustering techniques, which assume that features have similar scales and are normally distributed. Extreme skewness can distort the distance metrics used in clustering, potentially leading to misleading results.
+
+To address this issue, we will proceed to calculate the skewness of each variable. For variables with a skewness greater than 1, we will apply appropriate transformations to bring their distributions closer to normal.
+
+```{r}
+
+skewness_values <- sapply(selected_vars, skewness, na.rm = TRUE)
+
+skewness_df <- data.frame(
+  variable = names(skewness_values),
+  skewness = skewness_values)
+
+# Check what variables are more skewed
+high_skew <- skewness_df |> 
+  filter(abs(skewness) > 1)
+  
+# Check the range of the variables that will be transformed
+sapply(selected_vars[high_skew$variable], range, na.rm = TRUE)
+```
+
+We perform the subsequent transformations.
+
+```{r}
+# We apply transformations to variables with skewness > 1
+df_transformed <- data_cleaned %>%
+  mutate(
+    undergrad_enrollment = log1p(undergrad_enrollment),
+    masters_enrollment = log1p(masters_enrollment),
+    advanced_enrollment = log1p(advanced_enrollment),
+    long_advanced_enrollment = log1p(long_advanced_enrollment),
+    doctoral_enrollment = log1p(doctoral_enrollment),
+    erasmus_incoming = log1p(erasmus_incoming),
+    erasmus_outgoing = log1p(erasmus_outgoing),
+    undergrad_graduates = log1p(undergrad_graduates),
+    masters_graduates = log1p(masters_graduates),
+    advanced_graduates = log1p(advanced_graduates),
+    long_advanced_graduates = log1p(long_advanced_graduates),
+    doctoral_graduates = log1p(doctoral_graduates),
+    phd_intensity = log1p(phd_intensity),
+    international_student_share = log1p(international_student_share),
+    herfindahl_index = log1p(herfindahl_index))
+
+# We store the transformed selected variables
+selected_vars <- df_transformed[, c(
+  "undergrad_enrollment",
+  "masters_enrollment",
+  "advanced_enrollment",
+  "long_advanced_enrollment",
+  "doctoral_enrollment",
+  "female_students_ratio",
+  "female_staff_ratio",
+  "international_student_share",
+  "erasmus_incoming",
+  "erasmus_outgoing",
+  "undergrad_graduates",
+  "masters_graduates",
+  "advanced_graduates",
+  "long_advanced_graduates",
+  "doctoral_graduates",
+  "phd_intensity",
+  "herfindahl_index"
+)]
+
+# Display the new histograms
+selected_vars |>
+  gather(key = "Variable", value = "Value") |>
+  ggplot(aes(x = Value)) +
+  geom_histogram(bins = 30) +
+  facet_wrap(~ Variable, scales = "free")
+
+```
+
+After applying the transformations, we can appreciate how the distributions have improved significantly in terms of symmetry and normality.
+
+### Correlation
+
+The next crucial step in our analysis is to examine the correlations among our selected variables. ThE Principal Component Analysis aims to identify patterns in the data and reduce dimensionality by creating new, uncorrelated variables that capture the maximum variance in the dataset. For PCA to be effective, there should be some degree of correlation between the original variables, ensuring that there are underlying patterns or structures in the data that PCA can exploit.
+
+However, it's important to strike a balance. While we want correlations to exist, excessively high correlations between variables can be problematic. Variables that are too highly correlated may be redundant, and we may be introducing unnecessary noise into the analysis. By carefully examining the correlation matrix, we will try to keep the groups of variables that are moderately correlated, while we will have to make decisions regarding the highly correlated ones.
+
+```{r}
+
+# Calculate correlation matrix
+cor_matrix <- cor(selected_vars, use = "pairwise.complete.obs")
+
+# Create heatmap
+melted_cor <- melt(cor_matrix)
+
+ggplot(melted_cor, aes(x=Var1, y=Var2, fill=value)) +
+  geom_tile() +
+  scale_fill_gradient2(low="blue", high="red", mid="white",
+                       midpoint=0, limit=c(-1,1), space="Lab",
+                       name="Correlación") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+  labs(title = "Matriz de Correlación de Variables PCA")
+```
+
+We analyze in more detail the correlations greater than 0.8
+
+```{r}
+# Filter correlations bigger than 80%
+high_cor_heatmap <- melted_cor %>%
+  filter(value > 0.8)
+
+# Create heatmap for the higest correations
+ggplot(high_cor_heatmap, aes(x=Var1, y=Var2, fill=value)) +
+  geom_tile() +
+  scale_fill_gradient2(low="blue", high="red", mid="white",
+                       midpoint=0, limit=c(-1,1), space="Lab",
+                       name="Correlación") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+  labs(title = "Correlaciones mayores del 80%")
+
+```
+
+This correlation matrix reveals that the enrollment and graduate variables exhibit very high correlations with each other across different academic levels. It makes sense that a direct relationship exist between them, since the number of graduates is naturally dependent on the number of enrolled students. Taking into consideration our research question, I decided to keep enrollment variables rather than graduate, since they provide a more accurate representation of the current student body.
+
+```{r}
+selected_vars <- subset(selected_vars, select = -c(undergrad_graduates, masters_graduates, advanced_graduates, long_advanced_graduates, doctoral_graduates))
+
+```
+
+## PCA
+
+Now we are ready to perform a PCA in order to reduce the dimensionality of the data while retaining the most important features, making it easier to interpret patterns and identify underlying structures. We will accompany the results with a scree plot, to have a visual representation of the proportion of variance explained by each principal component, ordered from largest to smallest. This will help us determine how many components to retain in a PCA analysis by identifying the point where the additional variance gain becomes marginal.
+
+```{r}
+pca <- prcomp(selected_vars, scale = TRUE)
+summary(pca)  # Shows variance explained by each component
+pca  # Displays standard deviations and rotation (loadings)
+
+# Scree plot
+fviz_screeplot(pca, addlabels = TRUE)
+
+```
+
+We see how he first principal component (PC1) captures approximately 33% of the total variance, with PC2 and PC3 adding 14% and 10% respectively. Cumulatively, the first three components explain about 57% of the total variance, increasing to 66% with PC4 and 74% with PC5. The remaining components individually account for less than 10% of the variance each.
+
+In determining the optimal number of components to retain, we consider the common practice of aiming for a cumulative variance threshold of 70-80%. Based on our results, retaining 5 components appears appropriate, balancing detail preservation with dimensionality reduction.
+
+### Examination of the Principal Components
+
+Now we will examine the components one by one.
+
+#### PC1
+
+```{r}
+
+# List top contributing variables
+sort(abs(pca$rotation[,1]), decreasing = TRUE)
+
+# Graphical representation
+fviz_contrib(pca, choice = "var", axes = 1)
+
+# Bar plot of the loadings for the first principal component 
+barplot(pca$rotation[,1], las=2, col="darkblue")
+```
+
+PC1, accounting for 33.08% of the variance, emerges as the most influential component. It strongly correlates with doctoral and advanced enrollment, as well as Erasmus incoming and outgoing students. This suggests that PC1 primarily captures the scale of institutions and their international engagement. Interestingly, it negatively correlates with the Herfindahl index, indicating that larger, more internationally active universities tend to be more diverse in their academic offerings.
+
+#### PC2
+
+```{r}
+
+# List top contributing variables
+sort(abs(pca$rotation[,2]), decreasing = TRUE)
+
+# Graphical representation
+fviz_contrib(pca, choice = "var", axes = 2)
+
+# Bar plot of the loadings for the first principal component 
+barplot(pca$rotation[,2], las=2, col="darkblue")
+```
+
+PC2, explaining 14% of the variance, is predominantly characterized by strong negative loadings on female staff and student ratios. This component clearly reflects the gender composition within universities, potentially highlighting institutions with gender imbalances or those with strong representation in traditionally gender-skewed fields.
+
+#### PC3
+
+```{r}
+# List top contributing variables
+sort(abs(pca$rotation[,3]), decreasing = TRUE)
+
+# Graphical representation
+fviz_contrib(pca, choice = "var", axes = 3)
+
+# Bar plot of the loadings for the first principal component 
+barplot(pca$rotation[,3], las=2, col="darkblue")
+```
+
+PC3, contributing 10.10% to the variance, contrasts PhD intensity with master's and undergraduate enrollment. This component seems to differentiate between research-focused institutions and those more oriented towards undergraduate and master's education.
+
+#### PC4
+
+```{r}
+# List top contributing variables
+sort(abs(pca$rotation[,4]), decreasing = TRUE)
+
+# Graphical representation
+fviz_contrib(pca, choice = "var", axes = 4)
+
+# Bar plot of the loadings for the first principal component 
+barplot(pca$rotation[,4], las=2, col="darkblue")
+```
+
+PC4 and PC5, while contributing less to the overall variance (8.93% and 8.26% respectively), offer additional nuanced insights. PC4 emphasizes undergraduate enrollment and international student share, possibly distinguishing institutions with a strong focus on undergraduate education and international diversity.
+
+#### PC5
+
+```{r}
+# List top contributing variables
+sort(abs(pca$rotation[,5]), decreasing = TRUE)
+
+# Graphical representation
+fviz_contrib(pca, choice = "var", axes = 5)
+
+# Bar plot of the loadings for the first principal component 
+barplot(pca$rotation[,5], las=2, col="darkblue")
+ 
+```
+
+This last component contrasts PhD intensity with international student share, potentially identifying a trade-off between research focus and internationalization in some institutions.
+
+### Comments
+
+To complement our analysis, we will visualize PCA biplot to provides further insights into the characteristics of various universities in our dataset. Each point in this scatter plot represents a higher education institution, placed according to its scores on the first two principal components (PC1 on the x-axis and PC2 on the y-axis). These components capture the most important patterns in the original data and the labels will make it easier to identify and compare them in this reduced, two-dimensional space.
+
+```{r}
+
+df_pca <- data.frame(
+  PC1 = pca$x[,1],
+  PC2 = pca$x[,2],
+  Institution = df_transformed$`English Institution Name`
+)
+
+ggplot(df_pca, aes(x = PC1, y = PC2, label = Institution)) +
+  geom_point(alpha = 0.7, color = "blue") +
+  geom_text(size = 3, hjust = 0.6, vjust = 0, check_overlap = TRUE) +
+  labs(title = "First Two Principal Components",
+       x = "PC1 (Main Dimension)",
+       y = "PC2 (Secondary Dimension)") +
+  theme_minimal()
+
+```
+
+We can mention several things. On the one hand, the University of Lorraine stands out prominently on the far right of the PC1 axis, indicating its strong association with factors related to institutional size and international engagement. This positioning suggests that the University of Lorraine is one of the largest and most internationally active universities in the dataset, aligning with the information from our search results that highlight its significant international student population and leadership in Erasmus mobility programs.
+
+Institutions such as Cologne University of Catholic Theology, Faculty of Theology in Paderborn, and Theological University Apeldoorn are positioned at the top of the PC2 axis. This placement suggests a strong gender component in these institutions, potentially reflecting traditional gender distributions in theological fields. Their position indicates possible gender imbalances, which could be an interesting point for further investigation in the context of higher education demographics.
+
+In contrast, Prague City University, P. Stradins Medical College of the University of Latvia College and the Malta Leadership Institute appear in the bottom-left quadrant of the plot. This positioning might indicate lower international engagement and smaller institutional scale, coupled with a different gender composition compared to other universities in the dataset. These institutions could represent a category of smaller, specialized educational entities with unique characteristics.
+
+The central cluster of universities in the plot represents institutions that do not strongly differentiate along PC1 or PC2. This suggests a more balanced profile in terms of size, internationalization, and gender diversity. These universities form a core group that might be considered more "typical" in the context of our dataset.
+
+## Clustering
+
+In this phase of our analysis, we are applying clustering techniques to our dataset. Specifically, we are using the k-means algorithm to group the data into distinct clusters. This approach allows us to identify patterns and similarities among universities based on the characteristics we've been examining. Then, we will extract the cluster centers, which represent the average characteristics of each group. These centers are crucial for understanding the defining features of each cluster and how they differ from one another.
+
+First, we will begin by generating three clusters, aligning with the standardized classification of universities available in our dataset. The "Institution Category (standardized)" variable, provides a standardized European-level classification of higher education institutions and distinguishes the following three main categories:
+
+1.  University: These institutions have a primarily academic orientation, with the right to award doctoral degrees. They typically carry the full name "university" and may include variants like technological universities. The ability to grant doctorates is the principal criterion for this category.
+
+2.  University of Applied Sciences: These institutions focus strongly on applied research and regional labor market connections. They do not have the right to award doctoral degrees and have a more professional than academic orientation.
+
+3.  Other: This category encompasses all institutions that do not fit the descriptions of university or university of applied sciences. It may include specialized institutions such as art academies or military schools, as well as technological and vocational schools in countries without a binary system (e.g., the United Kingdom or France).
+
+As a first attempt we will define three clusters, since we aim to explore whether our approach aligns with or reveals differences from this standardized classification.
+
+```{r}
+
+fit <- kmeans(scale(selected_vars), centers = 3, nstart = 1000)
+
+
+centers <- fit$centers
+k <- nrow(fit$centers) 
+
+fviz_cluster(fit, data = selected_vars, geom = c("point"), ellipse.type = 'norm', pointsize = 1) +
+  theme_minimal() + 
+  geom_text(label = rownames(selected_vars), hjust = 0, vjust = 0, size = 2, check_overlap = F) +
+  scale_fill_brewer(palette = "Paired")
+
+```
+
+These are the resulting clusters. However, before we continue, we’re going to check if this is the number of clusters that we should use
+
+```{r}
+fviz_nbclust(scale(selected_vars), kmeans, method = 'wss', k.max = 5, nstart = 1000) 
+
+fviz_nbclust(scale(selected_vars), kmeans, method = 'silhouette', k.max = 5, nstart = 1000)
+
+```
+
+It seems 2 clusters is a better decision.
+
+```{r}
+
+fit <- kmeans(scale(selected_vars), centers = 2, nstart = 1000)
+
+centers <- fit$centers
+k <- nrow(fit$centers) 
+
+par(mfrow = c(2, 3))
+for (i in 1:k) {
+  barplot(centers[i, ], 
+          main = paste("Cluster", i, "Center"), 
+          las = 2, 
+          col = "darkblue",
+          ylim = c(min(centers), max(centers)))
+}
+par(mfrow = c(1, 1))
+
+
+fit$cluster
+fit$centers
+table(fit$cluster)
+
+```
+
+The analysis of our two-cluster solution reveals distinct profiles for European higher education institutions in respect to their academic profile, providing insights into their characteristics and potential focus areas:
+
+Cluster 1, comprising 1556 institutions, is characterized by negative values across most variables. This cluster represents smaller institutions with lower enrollment numbers across all academic levels (undergraduate, masters, advanced, and doctoral programs). They also show lower participation in Erasmus mobility programs, both incoming and outgoing. Interestingly, this cluster has a slightly higher proportion of international students and a notably higher Herfindahl index, suggesting greater institutional specialization or focus on specific academic areas. The slightly negative values for female student and staff ratios indicate a marginally lower representation of women compared to the overall average.
+
+Cluster 2, consisting of 1204 institutions, presents a contrasting profile with positive values for most variables. These institutions are generally larger, with higher enrollment numbers across all academic levels. They demonstrate stronger engagement with Erasmus programs, indicating a more active role in European student mobility. The positive values for PhD intensity suggest a stronger focus on research and doctoral education. However, this cluster shows a lower international student share outside of the Erasmus program and a significantly lower Herfindahl index, indicating a broader range of academic offerings and less specialization. The female student and staff ratios in this second cluster are slightly positive, suggesting a marginally higher representation of women compared to the overall average, but the difference is not substantial.
+
+This clustering reveals a clear distinction between smaller, more specialized institutions with a higher proportion of international students (Cluster 1) and larger, more comprehensive universities with a stronger European focus and broader academic offerings (Cluster 2). This division provides insights into the diverse landscape of European higher education and may reflect different institutional strategies and focuses within the sector.
+
+Let’s see the clusters in a clusplot.
+
+```{r}
+fviz_cluster(fit, data = selected_vars, geom = c("point"), ellipse.type = 'norm', pointsize = 1) +
+  theme_minimal() + 
+  geom_text(label = rownames(selected_vars), hjust = 0, vjust = 0, size = 2, check_overlap = F) +
+  scale_fill_brewer(palette = "Paired")
+```
+
+Now we will compare whether the clusters obtained coincide with the standardized classification of European institutions or not.
+
+```{r}
+
+df_transformed$Cluster <- as.factor(fit$cluster)
+
+
+table(df_transformed$Cluster, df_transformed$`Institution Category standardized`)
+
+
+ggplot(df_transformed, aes(x = factor(Cluster), fill = factor(`Institution Category standardized`))) +
+  geom_bar(position = "fill") +
+  labs(title = "Distribución de categorías estandarizadas por cluster",
+       x = "Cluster",
+       y = "Proporción",
+       fill = "Categoría Estándar") +
+  theme_minimal()
+
+library(vcd)
+
+# Calcular la V de Cramer manualmente
+assocstats(table(df_transformed$Cluster, df_transformed$`Institution Category standardized`))
+```
+
+The results reveal interesting patterns. These distributions suggest that Cluster 1 is more strongly associated with standard category 0, while Cluster 2 has a stronger association with standard category 1.
+
+To quantify the strength of this association, we calculated Cramer's V, which resulted in a value of 0.608. This indicates a moderate to strong association between our clusters and the standard categories.
+
+### Comments
+
+In conclusion, our clustering analysis offers an alternative categorization of European higher education institution taking into consdieration their aceademic profile and provides deeper understanding beyond the standardized ETER classification.
+
+As we have being seeing, our classification is based on a comprehensive set of variables including enrollment across different academic levels, gender ratios, international student share, Erasmus mobility, PhD intensity, and institutional diversity. This multifaceted approach captures institutional characteristics that may not be fully reflected in the standardized categories but can surely complement it.
+
+### Hierarchical clustering
+
+For further insights, we will move on to perform hierarchical clustering. Firstly we will visualize a classical dendrogram
+
+```{r}
+# Calcular la matriz de distancias
+d <- dist(scale(selected_vars), method = "euclidean")
+
+# Aplicar clustering jerárquico
+hc <- hclust(d, method = "ward.D2")
+
+# Asignar las etiquetas al objeto hc
+hc$labels <- rownames(selected_vars)  # IGUAL PONER AQUI DF_TRANSFORMED$UNIVERSITY NAME
+
+# Visualizar el dendrograma
+fviz_dend(
+  x = hc,
+  k = 2,
+  color_labels_by_k = TRUE,
+  cex = 0.8,
+  type = "phylogenic",
+  repel = TRUE
+) +
+  labs(title = "Hierarchical Clustering Dendrogram of Institutions") +
+  theme(axis.text.x = element_blank(), axis.text.y = element_blank())
+
+```
+
+This is the resulting visualization that represents the hierarchical structure resulting from applying Ward.D2 to the dataset, but it is very dense and difficult to read when there are many observations.
+
+Finally we will visualize the Universities on a map, color-coded by cluster, with interactive popups showing their names.
+
+```{r}
+# Crear el mapa interactivo
+leaflet(df_transformed) %>%
+  addTiles() %>%  # Añadir el mapa base (OpenStreetMap)
+  addCircleMarkers(
+    lng = ~`Geographic coordinates - longitude`,  # Columna de longitud
+    lat = ~`Geographic coordinates - latitude`,  # Columna de latitud
+    color = ~ifelse(Cluster == 1, "blue", "red"),  # Colores según el cluster
+    popup = ~`English Institution Name`,  # Mostrar el nombre de la universidad al hacer clic
+    radius = 5,  # Tamaño de los marcadores
+    stroke = FALSE,  # Sin borde en los marcadores
+    fillOpacity = 0.8  # Opacidad de los marcadores
+  ) %>%
+  addLegend(
+    colors = c("blue", "red"),  # Colores de la leyenda
+    labels = c("Cluster 1", "Cluster 2"),  # Etiquetas de la leyenda
+    title = "Clusters"  # Título de la leyenda
+  )
+
+```
+
+### Comments
+
+The analysis of HEI clusters across European countries reveals interesting patterns in higher education systems. I will briefly comment that Cluster 1 (blue dots) is predominant in countries such as Germany, France, Poland, and Italy, while Cluster 2 (red points) is more prevalent in countries like Germany, Spain, Turkey, the United Kingdom, and France. Interestingly, some countries like Germany and France have a significant presence in both clusters, indicating a diverse higher education landscape within these nations. This could reflect a mix of traditional, specialized institutions alongside larger, more comprehensive universities.
+
+The distribution of clusters also hints at regional trends. Central and Northern European countries tend to have more universities in Cluster 1, possibly reflecting a preference for specialized, research-intensive institutions. Southern and Eastern European countries, on the other hand, show a stronger presence in Cluster 2, which might indicate a focus on mass education and regional mobility.
+
+This clustering provides valuable insights into the European higher education landscape, revealing patterns that go beyond traditional classifications. It offers a nuanced view of institutional strategies across Europe, highlighting differences in size, specialization, and internationalization approaches. Such information could be crucial for policymakers, researchers, and prospective students in understanding the diverse higher education offerings across Europe.

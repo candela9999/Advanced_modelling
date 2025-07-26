@@ -1,0 +1,2024 @@
+---
+title: "Final project_Advanced Modelling"
+author: "Candela Gómez"
+date: "2025-03-19"
+output: rmdformats::robobook
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+The objective of this assignment is to to explore two key areas of predictive 
+modeling: classification and advanced regression, applied to student academic 
+performance. In the classification section our goal is to predict the academic 
+status (graduate, dropout, or enrolled) of students based on various socioeconomic, 
+academic, and institutional factors. This could be helpful to identify early 
+indicators of student success or risk of dropout. On its part, the regression 
+analysis will focus on predicting the average grade of students during their 
+first year of university, using the information available in our dataset. 
+
+In sum, by implementing statistical and machine learning approaches, we aim to 
+determine which factors most influence student performance. For it, a publicly 
+available dataset from the Instituto Politécnico de Portalegre, Portugal, was 
+used. The dataset contains 4,424 records spanning academic years 2008/2009 to 
+2018/2019, integrating information from multiple sources, including the Academic 
+Management System (AMS) and macroeconomic data from PORDATA. I consider it a 
+valuable resource for educational analytics, and expect our findings to provide 
+valuable insights for universities and policymakers to improve student retention 
+and academic outcomes.
+
+## Load libraries
+
+```{r}
+
+library(readr)
+library(DataExplorer)
+library(tidyverse)
+library(plotly)
+library(caret)
+library(GGally)
+library(ggeffects)
+library(MASS)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(nnet)
+library(glmnet)
+library(MLmetrics)
+library(rpart)
+library(rpart.plot)
+library(doParallel)
+library(xgboost)
+library(olsrr)
+library(randomForest)
+library(pdp)
+```
+
+## Read dataset
+
+```{r}
+data <- read.csv("data.csv", sep = ";") 
+str(data)
+```
+
+# Data cleaning and preprocessing
+
+The first thing I realize is that column names are long and complex, so I decided 
+to make them more manageable by renaming them to shorter, more intuitive names. 
+Here’s a brief description of some of the variables in our dataset, with the 
+newly assigned names:
+
+1.  **Demographic Features**:
+
+    -   `marital_status`: Marital status of the student.
+
+    -   `gender`: Gender of the student.
+
+    -   `age_enrollment`: Age at enrollment.
+
+    -   `nationality`: Nationality of the student.
+
+2.  **Academic Features**:
+
+    -   `prev_qualification`: Previous qualification.
+
+    -   `prev_grade`: Grade from previous qualification.
+
+    -   `admission_grade`: Admission grade.
+
+    -   `course`: Course enrolled in.
+
+    -   `enrolled_1st_sem`: Number of courses enrolled in the first semester.
+
+    -   `approved_1st_sem`: Number of courses approved in the first semester.
+
+    -   `grade_1st_sem`: Average grade in the first semester.
+
+    -   `enrolled_2nd_sem`: Number of courses enrolled in the second semester.
+
+    -   `approved_2nd_sem`: Number of courses approved in the second semester.
+
+    -   `grade_2nd_sem`: Average grade in the second semester.
+
+    -   `academic_status`: Academic status of the student.
+
+3.  **Socioeconomic Features**:
+
+    -   `mother_qual`: Mother’s qualification.
+
+    -   `father_qual`: Father’s qualification.
+
+    -   `mother_occ`: Mother’s occupation.
+
+    -   `father_occ`: Father’s occupation.
+
+    -   `unemployment_rate`: Unemployment rate.
+
+    -   `inflation_rate`: Inflation rate.
+
+    -   `gdp`: GDP.
+
+```{r}
+# Original variable names
+original_names <- names(data)
+
+# Define new, shorter names
+new_names <- c(
+  "marital_status", "app_mode", "app_order", "course", "attendance", 
+  "prev_qualification", "prev_grade", "nationality", "mother_qual", 
+  "father_qual", "mother_occ", "father_occ", "admission_grade", 
+  "displaced", "special_needs", "debtor", "tuition_up_to_date", 
+  "gender", "scholarship", "age_enrollment", "international", 
+  "credits_1st_sem", "enrolled_1st_sem", "evaluations_1st_sem", 
+  "approved_1st_sem", "grade_1st_sem", "no_eval_1st_sem", 
+  "credits_2nd_sem", "enrolled_2nd_sem", "evaluations_2nd_sem", 
+  "approved_2nd_sem", "grade_2nd_sem", "no_eval_2nd_sem", 
+  "unemployment_rate", "inflation_rate", "gdp", "academic_status"
+)
+
+# Assign the new names to the data frame
+names(data) <- new_names
+
+# Check the updated variable names
+names(data)
+```
+First insight into the data
+
+```{r}
+plot_intro(data)
+```
+We don't have missing values, being the vast majority of our columns continuous.
+However, most of them aren't in the appropriate format. We first convert 
+categorical variables into factor.
+
+```{r}
+
+categorical_vars <- c(
+  "marital_status", "app_mode", "course", "attendance", 
+  "prev_qualification", "nationality", "mother_qual", 
+  "father_qual", "mother_occ", "father_occ", 
+  "displaced", "special_needs", "debtor", "tuition_up_to_date", 
+  "gender", "scholarship", "international", "academic_status")
+
+data[categorical_vars] <- lapply(data[categorical_vars], as.factor)
+
+```
+
+There were two columns, grade_1st_sem and grade_1st_sem, that caused issues 
+because they contained decimal numbers with multiple periods. In R, such formats 
+are not valid numeric values, causing NA values when attempting to convert them 
+directly to numeric. To fix this, we cleaned the data by extracting only the 
+first decimal point and the following digit, then converted the cleaned strings 
+to numeric values and rounded them to one decimal place. This ensures the data 
+is properly formatted for analysis. However, we also identified and removed 
+records where grades exceeded the maximum possible value of 20, as specified by 
+the dataset creators. This step ensures data integrity and aligns with the 
+established grading scale of 0 to 20.
+
+```{r}
+# Function to clean and round to one decimal place
+clean_and_round <- function(column) {
+  # Extract the first decimal point and the following digit
+  column <- gsub("(\\d+\\.\\d).*", "\\1", column)
+  # Convert to numeric and round to one decimal place
+  round(as.numeric(column), digits = 1)
+}
+
+# Apply the function to the problematic columns
+data$grade_1st_sem <- clean_and_round(data$grade_1st_sem)
+data$grade_2nd_sem <- clean_and_round(data$grade_2nd_sem)
+
+# Filter records where grade_1st_sem is less than or equal to 20
+data <- data[data$grade_1st_sem <= 20, ]
+data <- data[data$grade_2nd_sem <= 20, ]
+
+```
+
+Then, we convert binary variables into numeric.
+
+```{r}
+# List of binary variables
+binary_vars <- c("attendance", "displaced", "special_needs", "debtor", 
+                 "tuition_up_to_date", "gender", "scholarship", "international")
+
+# Converting binary variables into numeric
+data[binary_vars] <- lapply(data[binary_vars], 
+                            function(x) as.numeric(as.character(x)))
+
+# Verifying the result
+str(data[, binary_vars])
+
+# Renaming
+colnames(data)[colnames(data) == "gender"] <- "gender_Male" # 1 male 0 female
+colnames(data)[colnames(data) == "attendance"] <- "attendance_Daytime"
+# 1 daytime 2 evening attendance
+
+```
+Next, we transform factor variables into numeric.
+
+Marital status: we realized the vast majority are single, so we will convert it 
+into a dummy
+
+```{r}
+
+table(data$marital_status)
+data <- data %>%
+  mutate(single = ifelse(marital_status == 1, 1, 0)) %>% #If single 1, if not, 0
+  dplyr::select(-marital_status)
+
+```
+Application mode: we transform this variable into a set of more specific binary 
+variables, each of them representing a specific and broad category of admission.
+
+```{r}
+
+table(data$app_mode)
+
+data <- data %>%
+  mutate(
+    app_regular = ifelse(app_mode %in% c(1, 17, 18), 1, 0),  # Regular Admission
+    app_special = ifelse(app_mode %in% c(5, 15, 16, 2, 10, 26, 27), 1, 0),  
+    # Special Cases (International, Ordinances, Regional)
+    app_over23 = ifelse(app_mode == 39, 1, 0),  # Over 23 Years Old
+    app_transfer_coursechange = ifelse(app_mode %in% c(42, 43, 51, 57), 1, 0),  
+    # Transfers & Course Changes
+    app_previous_highered = ifelse(app_mode %in% c(7, 44, 53), 1, 0)  
+    # Holders of Previous Higher Education Degrees
+  ) %>%
+  dplyr::select(-app_mode)
+
+```
+Course: we do the same for course, grouping them by fields.
+
+```{r}
+
+table(data$course)
+
+data <- data %>%
+  mutate(
+    engineering_tech = ifelse(course %in% c(9119), 1, 0),  
+    # Engineering & Technology
+    health_sciences = ifelse(course %in% c(9085, 9500, 9556), 1, 0),  
+    # Health Sciences
+    management_business = ifelse(course %in% c(9147, 9991), 1, 0),  
+    # Management & Business
+    social_sciences_humanities = ifelse(course %in% c(8014, 9238, 9853), 1, 0),  
+    # Social Sciences & Humanities
+    agriculture_env = ifelse(course %in% c(33, 9003, 9130), 1, 0),  
+    # Agriculture & Environmental Sciences
+    arts_media_comm = ifelse(course %in% c(171, 9070, 9670, 9773), 1, 0),  
+    # Arts, Media & Communication
+    tourism_hospitality = ifelse(course == 9254, 1, 0)  
+    # Tourism & Hospitality
+  )  %>%
+  dplyr::select(-course)
+
+```
+Previous qualification: the vast majority had previous secondary studies so we 
+convert it into a dummy.
+
+```{r}
+
+table(data$prev_qualification)
+
+data <- data %>%
+  mutate(secondary_education = ifelse(prev_qualification == 1, 1, 0))%>%
+  dplyr::select(-prev_qualification)
+
+```
+Nationality: if Portuguese 1, if not 0
+
+```{r}
+table(data$nationality)
+
+data <- data %>%
+  mutate(portuguese = ifelse(nationality == 1, 1, 0))%>%
+  dplyr::select(-nationality)
+
+```
+Several studies in educational sociology indicate that maternal education has a 
+stronger influence on student success than paternal education. Empirical evidence 
+from researches such as Davis-Kean (2005) and Fan & Chen (2001) supports this, 
+showing that children of highly educated mothers are more likely to graduate and 
+achieve higher academic performance. Given these findings, variable mother_qual 
+was retained and recategorized, while father_qual and father_occ were removed to 
+limit the number of variables and prioritize the most impactful predictors.
+
+```{r}
+table(data$mother_qual)
+
+data <- data %>%
+  mutate(
+    mother_secondary = ifelse(mother_qual %in% c(1, 9, 10, 12, 14, 18), 1, 0),
+    mother_higher = ifelse(mother_qual %in% c(2, 3, 4, 5, 6, 40, 41, 42, 43, 44), 
+                           1, 0),
+    mother_basic = ifelse(mother_qual %in% c(19, 22, 26, 27, 29, 30, 37, 38, 39), 
+                          1, 0),
+    mother_illiterate_other = ifelse(mother_qual %in% c(34, 35, 36, 11), 1, 0)
+  )%>%
+  dplyr::select(-mother_qual, -father_qual, -father_occ)
+
+```
+Mother occupation: we simplified and grouped similar occupations together.
+
+```{r}
+table(data$mother_occ)
+
+data <- data %>%
+  mutate(
+    mother_no_working = ifelse(mother_occ %in% c(0, 90, 99), 1, 0),
+    mother_high_position = ifelse(mother_occ %in% c(1, 2, 122, 123, 125), 1, 0),
+    mother_technical_admin = ifelse(mother_occ %in% c(3, 131, 132, 134, 141, 143, 
+                                                      144), 1, 0),
+    mother_services_sales = ifelse(mother_occ %in% c(5, 151, 152, 153, 194), 1, 0),
+    mother_agriculture = ifelse(mother_occ %in% c(6, 192), 1, 0),
+    mother_industry = ifelse(mother_occ %in% c(7, 8, 171, 173, 175, 193), 1, 0),
+    mother_cleaning = ifelse(mother_occ %in% c(191), 1, 0),
+    mother_unskilled = ifelse(mother_occ %in% c(9), 1, 0)
+  ) %>%
+  dplyr::select(-mother_occ)
+
+```
+As we are interested on early prediction, we aim to identify students at risk of 
+dropping out as soon as possible, allowing institutions to implement timely 
+interventions. Unlike models that rely on long-term academic data, our approach 
+emphasizes early university performance. Consequently, we will mantain first-semester 
+information, while excluding second-semester results, ensuring that predictions 
+are made in the initial stages of higher education.
+
+```{r}
+df <- data #starting point for regression
+
+data <- data %>% dplyr::select(-approved_2nd_sem, -enrolled_2nd_sem, 
+                               -evaluations_2nd_sem,-grade_2nd_sem, 
+                               -credits_2nd_sem, -no_eval_2nd_sem)
+
+```
+
+# Part 1: Classification
+## Exploratory Data Analysis
+
+Exploring the target variable
+
+```{r}
+
+prop.table(table(data$academic_status))
+
+# Distribution of academic status
+ggplot(data, aes(x = academic_status, fill = academic_status)) +
+  geom_bar() +
+  labs(title = "Distribution of Academic Status", x = "Academic Status", 
+       y = "Count")+
+  theme(legend.position = "none")
+
+```
+The dataset shows a slight class imbalance, with Graduates (49.1%) being the most 
+frequent category, followed by Dropouts (32.7%) and Enrolled students (18.2%). 
+Our primary goal is to classify students into all three categories rather than 
+focusing on a binary distinction, since this approach aligns better with the 
+objectives of the course, allowing us to explore multi-class classification 
+challenges. However, we acknowledge that the Enrolled category is the smallest 
+and may be harder for the model to predict accurately. Since our main interest 
+is in identifying students at risk of dropping out, misclassifications in the 
+Dropout category will be considered at the highest cost, while errors in the 
+Enrolled or Graduate categories will be of lesser concern.
+
+Exploring some relations with our target variable:
+
+1. Academic performance predictors
+
+```{r}
+# Admission Grade vs. Academic Status
+ggplot(data, aes(x = academic_status, y = admission_grade, fill = academic_status)) +
+  geom_boxplot() +
+  labs(title = "Admission Grade Distribution by Academic Status", 
+       x = "Academic Status", y = "Admission Grade") +
+  theme_minimal()+
+  theme(legend.position = "none")
+
+# First Semester Grade vs. Academic Status
+ggplot(data, aes(x = academic_status, y = grade_1st_sem, fill = academic_status)) +
+  geom_boxplot() +
+  labs(title = "First Semester Grade Distribution by Academic Status", 
+       x = "Academic Status", y = "First Semester Grade") +
+  theme_minimal()+
+  theme(legend.position = "none")
+
+# Previous Grade vs. Academic Status
+ggplot(data, aes(x = academic_status, y = prev_grade, fill = academic_status)) +
+  geom_boxplot() +
+  labs(title = "Previous Grade Distribution by Academic Status", 
+       x = "Academic Status", y = "Previous Grade") +
+  theme_minimal()+
+  theme(legend.position = "none")
+
+```
+While previous and admission grades do not seem to show significant differences 
+between the groups, the most striking pattern emerges with the first-semester grades. 
+Graduates tend to have the highest first-semester grades with a compact distribution, 
+while enrolled students have slightly lower but similar medians. In contrast, 
+dropouts exhibit a much wider dispersion, with many students having grades close 
+to zero. This suggests that early academic performance plays a crucial role in 
+determining student outcomes, as those who struggle in their first semester are 
+at a much higher risk of dropping out. The sharp contrast in grade distributions 
+indicates that first-semester performance could serve as a strong early indicator 
+for academic success or failure.
+
+2. Socioeconomic factors
+
+```{r}
+
+# Gender vs Academic Status
+ggplot(data, aes(x = factor(gender_Male, labels = c("Female", "Male")), 
+                 fill = as.factor(academic_status))) +
+  geom_bar(position = "fill") + 
+  theme_minimal() +
+  labs(title = "Gender vs Academic Status", y = "Proportion", 
+       x = "Gender", fill = "Academic Status")
+
+# Scholarship vs. Academic Status
+ggplot(data, aes(x = factor(scholarship, labels = c("No", "Yes")), 
+                 fill = as.factor(academic_status))) +
+  geom_bar(position = "fill") +
+  labs(title = "Scholarship Holders by Academic Status", 
+       x = "Scholarship", y = "Proportion", fill = "Academic Status") +
+  theme_minimal()
+
+# Tuition Up-to-Date vs. Academic Status
+ggplot(data, aes(x = factor(tuition_up_to_date, labels = c("No", "Yes")), 
+                 fill = as.factor(academic_status))) +
+  geom_bar(position = "fill") +
+  labs(title = "Tuition Payment Status by Academic Status", 
+       x = "Tuition up-to-date", y = "Proportion", fill = "Academic Status") +
+  theme_minimal()
+
+# Mother's Education vs. Academic Status
+ggplot(data, aes(x = factor(mother_secondary, labels = c("No", "Yes")), 
+                 fill = as.factor(academic_status))) +
+  geom_bar(position = "fill") +
+  labs(title = "Mother's Secondary Education & Academic Status", 
+       x = "Mother Secondary Educ.", y = "Proportion", fill = "Academic Status") +
+  theme_minimal()
+
+```
+Male students tend to dropout more than female and most students who receive a 
+scholarship tend to graduate, while only a small minority of them dropout. 
+On the other hand, among students who do not have a scholarship, the proportions 
+of graduates and dropouts are more balanced. 
+
+Additionally, a significant pattern emerges regarding tuition payment status: the
+majority of students who do not have their tuition up to date appear in the dropout 
+category. Since nearly 80% of students in this situation dropout, this variable 
+might be too dominant and could strongly influence the model. It raises the question 
+of whether we should consider removing it, as it could act more as a direct proxy 
+for dropout rather than an explanatory feature, potentially leading to overly 
+simplistic predictions. We finally decide to remove it.
+
+```{r}
+
+data <- data %>% dplyr::select(-tuition_up_to_date) 
+
+```
+
+3. Institutional & enrollment variables
+```{r}
+# Application Mode vs. Academic Status
+ggplot(data, aes(x = factor(app_regular, labels = c("No", "Yes")), 
+                 fill = as.factor(academic_status))) +
+  geom_bar(position = "fill") +
+  labs(title = "Application Mode & Academic Status", 
+       x = "Regular Application", y = "Proportion", fill = "Academic Status") +
+  theme_minimal()
+
+# Study Program vs. Academic Status
+ggplot(data, aes(x = factor(health_sciences, labels = c("No", "Yes")), 
+                 fill = as.factor(academic_status))) +
+  geom_bar(position = "fill") +
+  labs(title = "Health Sciences Students & Academic Status", 
+       x = "Health Sciences", y = "Proportion", fill = "Academic Status") +
+  theme_minimal()
+
+```
+People that entered university through the regular modalities are more prone 
+to graduate, compared those who applied by other methods. Moreover, there seems 
+to be a slightly higher proportion of graduates among health sciences students 
+compared to those in other fields of study, maybe due to the vocational nature or 
+compromise these degrees are usually associated with.
+
+## Correlation analysis and feature selection
+
+In this section we aim to analyze the correlations between numerical variables 
+in the dataset.  
+
+```{r}
+# Select only numeric variables
+numeric_data <- data[, sapply(data, is.numeric)]
+
+# Compute the correlation matrix
+cor_matrix <- cor(numeric_data, use = "complete.obs") 
+
+# Install and load the corrplot package
+library(corrplot)
+
+# Plot the correlation matrix
+corrplot(cor_matrix, method = "color", type = "upper", tl.col = "black", 
+         tl.srt = 45)
+```
+The correlation matrix is converted into a data frame to identify highly 
+correlated variable pairs. Pairs with a correlation coefficient above 0.7 
+(excluding self-correlations) are extracted and sorted by absolute correlation 
+value. This helps detect potential multicollinearity, which may indicate 
+redundant features that should be removed or adjusted to improve model 
+performance.
+
+```{r}
+# Convert the correlation matrix to a data frame
+cor_df <- as.data.frame(as.table(cor_matrix))
+
+# Filter pairs with correlation >= 0.8 (excluding self-correlations)
+high_cor_pairs <- subset(cor_df, abs(Freq) >= 0.7 & Var1 != Var2)
+
+# Sort by absolute correlation value
+high_cor_pairs <- high_cor_pairs[order(-abs(high_cor_pairs$Freq)), ]
+
+# Display the highly correlated pairs
+print(high_cor_pairs)
+```
+
+We will eliminate "enrolled_1st_sem" and "portuguese" to reduce noise and 
+redundancy in the dataset. "Enrolled_1st_sem" is highly correlated with both 
+"credits_1st_sem" and "approved_1st_sem," meaning it does not add much 
+independent information. Similarly, "portuguese" and "international" are 
+perfectly negatively correlated, making one of them redundant.
+
+```{r}
+data<-data %>%
+  dplyr::select(-portuguese, -enrolled_1st_sem)
+```
+
+## Statistical classification
+
+As part of the statistical classification approach, we will explore several 
+models, including multinomial logistic regression, Linear Discriminant Analysis, 
+and Quadratic Discriminant Analysis, which fall under the umbrella of Bayesian-
+inspired techniques. These models will help us understand the relationships 
+between predictor variables and academic status.
+
+### Multinomial logistic regression model
+
+To classify students into Dropout, Enrolled, or Graduate, we begin with a 
+multinomial logistic regression model. This method allows us to model categorical 
+outcomes with more than two classes by estimating the probability of each student 
+belonging to one of the three academic status categories. 
+
+First, we split the data into an 80% training set and a 20% testing set to ensure 
+that our model is evaluated on unseen data. 
+
+```{r}
+
+# Data partition 
+set.seed(123)  
+in_train <- createDataPartition(data$academic_status, p = 0.8, list = FALSE)
+training <- data[in_train,]
+testing <- data[-in_train,]
+
+nrow(training)
+nrow(testing)
+
+```
+We will begin with a theory-driven approach, selecting variables based on domain 
+knowledge and our exploratory data analysis. This will gives us an initial sense 
+of which variables are the most relevant and whether they behave as expected. 
+Additionally, we exponentiate the model coefficients to interpret their effects 
+in terms of odds ratios, helping us understand the impact of different features 
+on the likelihood of a student belonging to each academic category.
+
+```{r}
+
+# Train the multinomial model with selected predictors
+multinom.model <- multinom(academic_status ~ age_enrollment + gender_Male + 
+                           scholarship + prev_grade + admission_grade +
+                           app_regular + app_over23 + engineering_tech 
+                           + health_sciences + social_sciences_humanities
+                           + arts_media_comm + unemployment_rate + gdp 
+                           + grade_1st_sem + mother_secondary + mother_higher 
+                           + mother_basic, 
+                           data = training)
+
+# Display model summary to interpret coefficients
+summary(multinom.model)
+
+# Exponentiate coefficients for better interpretation
+exp(coef(multinom.model))
+
+```
+The multinomial model results highlight several key factors influencing student 
+outcomes. Scholarship holders are significantly more likely to graduate or stay 
+enrolled, reinforcing the role of financial support in academic success. Previous 
+and admission grades have a minor but positive effect, while maternal education 
+strongly correlates with higher enrollment and graduation rates. Engineering 
+students are less likely to graduate compared to those in health sciences, 
+potentially reflecting differences in program difficulty. The unemployment rate 
+slightly decreases enrollment likelihood but has minimal impact on graduation.
+
+```{r}
+set.seed(123)
+# Predict on the training set
+train_preds_multinom <- predict(multinom.model, newdata = training)
+
+# Compute confusion matrix for the training set
+conf_matrix_train <- confusionMatrix(train_preds_multinom, 
+                                     training$academic_status)
+print(conf_matrix_train)
+
+```
+The confusion matrix shows an overall accuracy of 63.6%, performing well for 
+predicting graduates (86.6% sensitivity) and moderately for dropouts (60.6%). 
+However, it struggles with enrolled students (6.8% sensitivity), likely due to 
+class imbalance. 
+
+```{r}
+# Predict on the test set
+test_preds_multinom <- predict(multinom.model, newdata = testing)
+
+# Compute confusion matrix for the test set
+conf_matrix_test <- confusionMatrix(test_preds_multinom, testing$academic_status)
+print(conf_matrix_test)
+
+```
+Overall, the model is performing well for dropout and graduate predictions but 
+has difficulty identifying enrolled students due probably to class imbalance and 
+underrepresentation.
+
+We are now going to visualize two graphs useful for understanding how predictor 
+variables impact the likelihood of a student being classified into the different 
+academic statuses, allowing us to interpret the model's behavior more intuitively.
+
+```{r}
+# Visualizar el impacto de una variable
+gg.pred <- ggpredict(multinom.model, terms = "mother_secondary")
+plot(gg.pred)
+
+# Visualizar el impacto de una variable
+gg.pred <- ggpredict(multinom.model, terms = "grade_1st_sem")
+plot(gg.pred)
+
+```
+The first graph suggests that having a mother with secondary education positively 
+influences a student's chances of continuing their education and graduating,
+aligning with findings from sociological studies on parental education. The 
+second one highlights how first semester grade plays a key role in predicting a 
+student's academic status, with lower grades correlating with higher dropout 
+probabilities, and higher grades correlating with higher graduation probabilities.
+
+### Lasso regularized multinomial model
+
+```{r}
+set.seed(123)
+
+# Preparing data for glmnet
+y_train <- as.numeric(training$academic_status) - 1  
+y_test <- as.numeric(testing$academic_status) - 1  
+
+# Matrix creation 
+X_train <- model.matrix(academic_status ~ ., data = training)[,-1]
+X_test <- model.matrix(academic_status ~ ., data = testing)[,-1]
+
+```
+
+We train the model
+
+```{r}
+set.seed(123)
+
+# Train Lasso model
+lasso_model <- cv.glmnet(X_train, y_train, 
+                         family = "multinomial", 
+                         alpha = 1,  # (L1 penalization)
+                         type.multinomial = "grouped")
+
+# Select best lambda
+best_lambda <- lasso_model$lambda.min
+print(best_lambda)
+
+```
+
+We make predictions on the training set
+
+```{r}
+
+lasso_preds <- predict(lasso_model, newx = X_test, s = "lambda.min", 
+                       type = "response")
+
+# We select the highest probablity class
+lasso_preds <- apply(lasso_preds, 1, which.max) - 1  
+
+# Converting to factor
+lasso_preds <- as.factor(lasso_preds + 1)
+y_test_factor <- as.factor(y_test + 1)
+
+# Evalutation
+conf_matrix_lasso <- confusionMatrix(lasso_preds, y_test_factor)
+print(conf_matrix_lasso)
+
+```
+The confusion matrix results show that the model has an overall accuracy of 
+72.07%, with a Kappa value of 0.5256, indicating moderate agreement between 
+predicted and actual values. The model performs better at predicting Dropout 
+(Class 1) and Graduate (Class 3) statuses, with accuracy rates of 79.43% and 
+88.21% respectively, while the model struggles more with predicting the Enrolled 
+(Class 2) status, with only 15.29% sensitivity.
+
+```{r}
+# Extract coefficients
+lasso_coefs <- coef(lasso_model, s = "lambda.min")
+print(lasso_coefs)
+
+```
+
+Financial aspects play a crucial role, with debtor status increasing dropout 
+likelihood, while scholarships significantly enhance graduation prospects. 
+Maternal education emerges as a powerful predictor across all outcomes, with 
+higher levels generally associated with better student performance. The type of 
+application (regular vs. special) shows some impact on enrollment status. 
+Interestingly, maternal employment status also influences graduation rates, with 
+students whose mothers are not working or are in cleaning occupations showing 
+higher graduation probabilities.
+
+Making predictions on the testing set
+
+```{r}
+# Make predictions on the testing set
+lasso_preds_test <- predict(lasso_model, newx = X_test, s = "lambda.min", 
+                            type = "response")
+
+# Since glmnet returns probabilities, we select the class with the highest probability
+lasso_preds_test <- apply(lasso_preds_test, 1, which.max) - 1  
+
+# Convert the predictions and the test labels to factors for confusion matrix comparison
+lasso_preds_test <- as.factor(lasso_preds_test + 1)
+y_test_factor <- as.factor(y_test + 1)
+
+# Evaluate the model performance with confusion matrix
+conf_matrix_lasso_test <- confusionMatrix(lasso_preds_test, y_test_factor)
+
+# Print confusion matrix
+print(conf_matrix_lasso_test)
+
+```
+We see how accuracy is better than in the previous one (72.07%) and sensitivity 
+for the dropout class is better too (79.43%). 
+
+```{r}
+# Extracting number of selected variables
+lasso_coefs_matrix <- as.matrix(lasso_coefs[[3]])
+non_zero_coefs <- sum(lasso_coefs_matrix != 0)
+print(non_zero_coefs)
+
+```
+We realize lasso performs better but uses too many variables. Taking advantage 
+of its information, we will create a new multinomial logistic regression model, 
+just using 13 variables.
+
+### Seccond attempt multinomial logistic regression model
+```{r}
+
+set.seed(123) 
+in_train <- createDataPartition(data$academic_status, p = 0.8, list = FALSE)
+training <- data[in_train,]
+testing <- data[-in_train,]
+
+# Train the new multinomial model with selected predictors
+multinom.model2 <- multinom(academic_status ~ mother_cleaning + debtor +
+                              mother_no_working +mother_illiterate_other + 
+                              tourism_hospitality +credits_1st_sem +gender_Male +
+                              app_over23 +mother_higher + mother_agriculture + 
+                              approved_1st_sem +app_special +scholarship,
+                            data = training)
+
+# Predict on the training set
+train_preds_multinom2 <- predict(multinom.model2, newdata = training)
+
+# Compute confusion matrix for the training set
+conf_matrix_train2 <- confusionMatrix(train_preds_multinom2, 
+                                      training$academic_status)
+print(conf_matrix_train2)
+
+
+# Predict on the test set
+test_preds_multinom2 <- predict(multinom.model2, newdata = testing)
+
+# Compute confusion matrix for the test set
+conf_matrix_test2 <- confusionMatrix(test_preds_multinom2, 
+                                     testing$academic_status)
+print(conf_matrix_test2)
+
+```
+These results show the performance of the multinomial model on both the training 
+and testing sets. We see a 70.45% overall accuracy in the testing set, and 79.43% 
+sensitivity and 82.27% specificity for the dropout category. We prefer this last 
+model due to its simplicity and interpretability with a comparable performance.
+
+### Linear Discriminant Analysis (LDA)
+
+Now, we will apply LDA to predict the academic status of students. We will use 
+the selected variables based on previous analysis and the results from our prior 
+models to train the LDA model. 
+
+```{r}
+
+set.seed(123)
+lda_model <- lda(academic_status ~ mother_cleaning+debtor +mother_no_working + 
+                   mother_illiterate_other + tourism_hospitality +credits_1st_sem 
+                 +gender_Male +app_over23 +mother_higher + mother_agriculture + 
+                   approved_1st_sem +app_special +scholarship, 
+                 data = training)
+
+# Predictions in the testing set
+lda_preds <- predict(lda_model, newdata = testing)
+
+# Model evaluation
+conf_matrix_lda <- confusionMatrix(lda_preds$class, testing$academic_status)
+print(conf_matrix_lda)
+
+```
+
+The LDA model performs a bit worse compared to our last model, with an overall 
+accuracy of 70.22% (vs 70.45%). Regarding its performance related to the dropout 
+category, it has a slightly better specificity (83.82% vs 82.27%), but the most 
+important metric in this case is sensitivity in which it performs a bit worse 
+(78.37% vs 79.43%). Our multinom.model2 is the best one up to the moment.
+
+### Quadratic Discriminant Analysis (QDA)
+
+Next, we will implement and evaluate QDA model.
+
+```{r}
+# Train QDA model
+qda_model <- qda(academic_status~ debtor +mother_no_working +tourism_hospitality 
+                 +credits_1st_sem +gender_Male +app_over23 +mother_higher
+                 +mother_agriculture +approved_1st_sem +app_special +scholarship, 
+                 data = training)
+
+#  Predictions in the testing set
+prediction_qda <- predict(qda_model, newdata = testing)$class
+
+# Evaluation
+conf_matrix_qda <- confusionMatrix(prediction_qda, testing$academic_status)
+print(conf_matrix_qda)
+
+```
+The QDA model performed worse than the previous models in terms of overall 
+accuracy (61.3%) and predict worse in every metric.
+
+## Machine Learning
+
+After evaluating these statistical models, we will transition to machine learning 
+techniques to improve prediction accuracy and further refine our understanding 
+of the data.
+
+```{r}
+
+# Configure control for 10-fold cross validation
+ctrl <- trainControl(
+  method = "repeatedcv", 
+  number = 10,
+  repeats = 3,  
+  classProbs = TRUE,  
+  summaryFunction = multiClassSummary, 
+  verboseIter = TRUE
+)
+
+```
+
+### Benchmark model
+
+Our first move will be establishing a Benchmark model. This model predicts the 
+most frequent class, in this case, Graduate, without considering any predictor 
+variables. It serves as a baseline to compare the performance of more advanced 
+models.
+
+```{r}
+# Benchmark: Regla de Mayoría (predice siempre Graduate)
+majority_class <- names(which.max(table(training$academic_status)))
+benchmark_preds <- factor(rep(majority_class, nrow(testing)), 
+                          levels = levels(testing$academic_status))
+
+# Evaluar Benchmark
+conf_matrix_benchmark <- confusionMatrix(benchmark_preds, testing$academic_status)
+
+# Imprimir resultados
+print(conf_matrix_benchmark)
+
+```
+The overall accuracy of the model is 49.94%. This benchmark serves as a minimum 
+reference point: any model we build must exceed it.
+
+### k-Nearest Neighbors (k-NN)
+
+Now, we will explore the k-NN algorithm.
+
+```{r}
+
+set.seed(123)
+
+knnFit <- train(
+  academic_status ~ ., 
+  data = training,
+  method = "kknn",   
+  preProc = c('scale', 'center'),
+  tuneLength = 5, 
+  metric = "Accuracy",
+  trControl = ctrl
+)
+
+# Predictions
+knnProb <- predict(knnFit, testing, type="prob")
+prediction_knn <- predict(knnFit, testing)
+
+# Evaluation
+conf_matrix_knn <- confusionMatrix(prediction_knn, testing$academic_status)
+print(conf_matrix_knn)
+
+```
+
+In the results, the k-NN model shows an accuracy of 63.73%, which is better than 
+the benchmark model, but still worse than our last multinomial.
+
+### Decision tree
+
+Next, let's see if the Decision Tree algorithm works better for our dataset.
+
+```{r}
+
+set.seed(123)
+# Train the Decision Tree
+control <- rpart.control(minsplit = 8, maxdepth = 12, cp=0.001)
+dtFit <- rpart(academic_status ~ ., data = training, method = "class", 
+               control = control)
+
+# Visualization
+rpart.plot(dtFit, digits = 3)
+
+# Prediction
+dtPred <- predict(dtFit, testing, type = "class")
+
+# Evaluation
+conf_matrix_dt <- confusionMatrix(dtPred, testing$academic_status)
+print(conf_matrix_dt)
+
+```
+In the results, the Decision Tree model shows an accuracy of 67.32%, which is 
+better than the k-NN model but still not better than out winner up to the moment.
+
+### Random forest
+
+Now we will try with the Random Forest (RF) model but we will try to reduce its 
+computation time, which was previously too long. To speed up the process, we use 
+parallel processing.
+
+```{r}
+# Activating parallel processing
+
+cl <- makePSOCKcluster(detectCores() - 1) 
+registerDoParallel(cl)
+
+# Random Forest 
+rfFit <- train(
+  academic_status ~ ., 
+  data = training,
+  method = "rf",   
+  preProc = c('scale', 'center'),
+  tuneLength = 3,  
+  metric = "Accuracy",
+  trControl = ctrl,
+  ntree = 100  
+)
+
+stopCluster(cl)  # Close prallel processes
+
+# Model Evaluation
+rfPred <- predict(rfFit, testing)
+conf_matrix_rf <- confusionMatrix(rfPred, testing$academic_status)
+print(conf_matrix_rf)
+
+
+```
+This model, along with the multinomial logistic regression model, is one of the 
+best we have achieved so far. It surpasses the multinomial model in terms of 
+accuracy and specificity, but slightly falls behind in terms of sensitivity for 
+the Dropout category.
+
+### Gradient Boosting
+
+Finally, we try Gradient Boosting.
+
+```{r}
+
+# Defining hyperparameters manually to reduce time
+param_grid <- expand.grid(
+  nrounds = c(50, 100),  
+  max_depth = c(3, 5),  
+  eta = c(0.1, 0.2),  
+  gamma = c(0, 0.1),  
+  colsample_bytree = c(0.7),  
+  min_child_weight = c(1),  
+  subsample = c(0.7) 
+)
+
+# Cross Validation
+ctrl <- trainControl(
+  method = "cv", 
+  number = 3,  
+  classProbs = TRUE,
+  verboseIter = TRUE,
+  allowParallel = FALSE  
+)
+
+# Training XGBoost
+gbmFit <- train(
+  academic_status ~ ., 
+  data = training,
+  method = "xgbTree",   
+  preProc = c('scale', 'center'),
+  tuneGrid = param_grid,  # En vez de tuneLength
+  metric = "Accuracy",
+  trControl = ctrl
+)
+
+# Predictions
+gbmProb <- predict(gbmFit, testing, type="prob")
+prediction_gbm <- predict(gbmFit, testing)
+
+# Evaluation
+conf_matrix_gbm <- confusionMatrix(prediction_gbm, testing$academic_status)
+print(conf_matrix_gbm)
+
+```
+We obtained very similar results as with Random Forest.
+Visualizing the results:
+
+```{r}
+gbm_importance <- varImp(gbmFit, scale = FALSE)
+plot(gbm_importance, main = "Feature Importance - Gradient Boosting")
+
+```
+
+From the plot, we get that the most important variables for the Gradient Boosting 
+model are: the number of courses approved and enrolled in the first semester, 
+average grade in the first semester, the number of evaluations to curricular units, 
+age of enrollment and having a scholarship. These variables appear at the top of 
+the list and show the most significant influence on the model’s predictions. 
+
+Visual confusion matrix
+
+```{r}
+
+conf_matrix <- as.data.frame(conf_matrix_gbm$table)
+
+# Visualization
+ggplot(conf_matrix, aes(x=Reference, y=Prediction, fill=Freq)) +
+  geom_tile() +
+  scale_fill_gradient(low="white", high="red") +
+  geom_text(aes(label=Freq), vjust=0.5, size=5) +
+  theme_minimal() +
+  labs(title="Matriz de Confusión - Gradient Boosting", x="Real Value", y="Prediction")
+
+```
+
+We can visually appreciate how most dropout and graduates cases were correctly identified, being the highest number of false positives in relation to the enrolled category.
+
+Partial Dependence Plots (PDP)
+
+```{r}
+
+
+# Crear gráficos de dependencia parcial
+partial(gbmFit, pred.var = "scholarship", plot = TRUE, rug = TRUE)
+partial(gbmFit, pred.var = "admission_grade", plot = TRUE, rug = TRUE)
+
+```
+
+The graph shows how the prediction changes as admission_grade varies, holding 
+all other variables constant. The fluctuations in the line indicate that the 
+effect of “admission_grade” is not linear and that the relationship with the 
+prediction changes at different levels of “admission_grade”. In contrast, with 
+“scholarship” we observe a linear relationship.
+
+### Ensemble Model
+
+to finish with this first part we are going to create an ensemble model using the 
+three models that performed better for our objectives, that is, the second 
+Multinomial Logistic Regression, Random Forest, and XGBoost, and check if it 
+performs better or not. 
+
+```{r}
+
+# We will use the majority vote of all the models for the final prediction.
+ensemble_preds <- data.frame(multinom = test_preds_multinom2, 
+                             rf = rfPred, 
+                             gbm = prediction_gbm)
+
+# Combine the predictions using a simple majority vote 
+ensemble_preds_final <- apply(ensemble_preds, 1, function(x) 
+  names(sort(table(x), decreasing = TRUE)[1]))
+
+# Convert final predictions to factor
+ensemble_preds_final <- factor(ensemble_preds_final, 
+                               levels = levels(testing$academic_status))
+
+# Evaluate the ensemble model
+conf_matrix_ensemble <- confusionMatrix(ensemble_preds_final, 
+                                        testing$academic_status)
+print(conf_matrix_ensemble)
+```
+
+We obtained the best accuracy so far 72.42%, and a better performance in all 
+metrics for all our classes. This will be our chosen model.
+
+# Part 2: Advanced regression
+
+In this second part our research question will be, on the one hand, what are the 
+most important factors influencing students' academic performance during the 
+first year of university? And, on the other hand, how accurately can we predict 
+their average grades during the first year enrolled od students in Instituto 
+Politécnico de Portalegre using different statistical and machine learning models?
+
+Our target variable will be derived from a combination of first and second 
+semester grades (grade_1st_sem and grade_2nd_sem). The average grades of both 
+semesters will be our target variable.
+
+```{r}
+df$average_grade <- rowMeans(df[, c("grade_1st_sem", "grade_2nd_sem")])
+
+```
+
+Consequently, we remove grade_1st_sem and grade_2nd_sem to avoid repeating 
+information. We also exclude the *no_eval* and *approved* variables because 
+they contain information that would only be known after the student has completed 
+their courses, which contradicts our goal of building a model that predicts 
+academic performance before the student begins their studies. On the contrary, 
+*credits* and *enrolled* variables will be retained because they provide relevant 
+information about the student's academic workload and engagement at the time of 
+enrollment.
+
+```{r}
+df <- df %>%
+  dplyr::select( -grade_1st_sem, -grade_2nd_sem,
+         -approved_1st_sem, -approved_2nd_sem,
+         -no_eval_1st_sem, -no_eval_2nd_sem)
+```
+
+## Exploring our new target variable
+
+```{r}
+
+# Histogram to check distribution
+ggplot(df, aes(x = average_grade)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "black", alpha = 0.7) +
+  labs(title = "Distribution of Average Grade", x = "Average Grade", y = "Count") +
+  theme_minimal()
+```
+Performing some bivariate analysis
+
+```{r}
+# Scholarship Status vs. Average Grade
+ggplot(df, aes(x = factor(academic_status), y = average_grade)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(title = "Academic status vs. Average Grade",
+       x = "Academic status",
+       y = "Average Grade") +
+  theme_minimal()
+```
+
+Our target variable exhibits significant skewness due to its strong correlation 
+with academic status, where low values primarily reflect dropout students. Since 
+our objective prioritizes academic success forecasting over dropout analysis, 
+recalibrating the dataset to exclude dropout-influenced cases would enhance model 
+precision for the target population.
+
+```{r}
+
+df <- df %>% filter(academic_status != "Dropout")
+
+```
+
+The box plot reveals several outliers significantly deviating from the main 
+distribution. To address this issue and improve the model's accuracy, we've 
+decided to filter out cases with an average grade below 9. This step helps to 
+focus the analysis on more representative data points and reduces the impact of 
+extreme outliers on our predictions.
+
+```{r}
+
+ggplot(df, aes(y = average_grade)) +
+  geom_boxplot(fill = "lightblue", outlier.color = "red", outlier.shape = 16) +
+  labs(title = "Boxplot de Average Grade", y = "Average Grade") +
+  theme_minimal()
+
+# Removing outliers  
+df <- df %>% filter(average_grade >= 9)
+
+# Histogram to check distribution
+ggplot(df, aes(x = average_grade)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "black", alpha = 0.7) +
+  labs(title = "Distribution of Average Grade", x = "Average Grade", y = "Count") +
+  theme_minimal()
+```
+
+More bivariate analysis
+
+```{r}
+
+# 1. Admission Grade vs. Average Grade
+ggplot(df, aes(x = admission_grade, y = average_grade)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  labs(title = "Admission Grade vs. Average Grade",
+       x = "Admission Grade",
+       y = "Average Grade") +
+  theme_minimal()
+
+
+# 2. Scholarship Status vs. Average Grade
+ggplot(df, aes(x = factor(scholarship, labels = c("No", "Yes")),
+                          y = average_grade)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(title = "Scholarship Status vs. Average Grade",
+       x = "Scholarship Status",
+       y = "Average Grade") +
+  theme_minimal()
+
+
+# 3. Age at Enrollment vs. Average Grade
+ggplot(df, aes(x = prev_grade, y = average_grade)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(title = "Admission Grade vs. Average Grade",
+       x = "Previous Grade",
+       y = "Average Grade") +
+  theme_minimal()
+
+```
+Students with and without an scholarship don't seem to have significance 
+differences in their average grade. However, we observe a positive relation 
+between our target and the other two variables. The higher the admission and 
+the previous grade, the highest seem to be their average grade during the first 
+course.
+
+## Correlation analysis and feature selection
+
+We visualize the correlations between numerical variables in the dataset. 
+
+```{r}
+# Select only numeric variables
+numeric_data <- df[, sapply(df, is.numeric)]
+
+# Compute the correlation matrix
+cor_matrix <- cor(numeric_data, use = "complete.obs") 
+
+# Install and load the corrplot package
+library(corrplot)
+
+# Plot the correlation matrix
+corrplot(cor_matrix, method = "color", type = "upper", tl.col = "black", tl.srt = 45)
+```
+As we did in the previous part, we identify highly correlated variable pairs and 
+take decisions to avoid multicollinearity.
+
+```{r}
+# Convert the correlation matrix to a data frame
+cor_df <- as.data.frame(as.table(cor_matrix))
+
+# Filter pairs with correlation >= 0.8 (excluding self-correlations)
+high_cor_pairs <- subset(cor_df, abs(Freq) > 0.7 & Var1 != Var2)
+
+# Sort by absolute correlation value
+high_cor_pairs <- high_cor_pairs[order(-abs(high_cor_pairs$Freq)), ]
+
+# Display the highly correlated pairs
+print(high_cor_pairs)
+```
+
+We average the credits, enrolled y evaluations of the first and second semesters.
+
+```{r}
+df <- df %>%
+  mutate(
+    avg_credits = (credits_1st_sem + credits_2nd_sem) / 2,
+    avg_enrolled = (enrolled_1st_sem + enrolled_2nd_sem) / 2,
+    avg_evaluations = (evaluations_1st_sem + evaluations_2nd_sem) / 2
+  ) %>%
+  dplyr::select(-credits_1st_sem, -credits_2nd_sem, 
+         -enrolled_1st_sem, -enrolled_2nd_sem, 
+         -evaluations_1st_sem, -evaluations_2nd_sem)
+
+```
+
+However, avg_enrolled and avg_credits still have a very high correlation so we 
+decide to keep only avg_enrolled because it directly represents the number of 
+courses a student is taking, which might be more intuitive for interpretation. 
+We are also discarding app_previous_highered because its very correlated with 
+prev_secondary.We are not interrested in the academic status of students either.
+
+```{r}
+
+df <- df %>%
+    dplyr::select(-portuguese, -avg_credits,-academic_status, -mother_secondary, 
+                  -app_previous_highered) 
+```
+
+## Interpreting 
+
+We divide our dataset into training and testing set.
+
+```{r}
+set.seed(123) 
+in_train <- createDataPartition(df$average_grade, p = 0.75, list = FALSE)
+training <- df[in_train, ]
+testing <- df[-in_train, ]
+
+nrow(training)
+nrow(testing)
+
+```
+We plot the average_grade distribution in the training set
+
+```{r}
+
+
+ggplot(training, aes(x = average_grade)) + 
+  geom_density(fill = "navyblue", alpha = 0.6) + 
+  labs(title = "Distribution of Average Grade", x = "Average Grade", 
+       y = "Density")
+
+```
+We now want to visualize the correlation of the variable we will be working with 
+and our target variable 
+
+```{r}
+
+num_vars <- training[, sapply(training, is.numeric)]  
+cor_matrix <- cor(num_vars, use = "complete.obs") 
+
+# Extract correlations of average_grade with the rest
+corr_average_grade <- sort(cor_matrix["average_grade", ], decreasing = TRUE)
+corr_df <- data.frame(Variable = names(corr_average_grade), Correlation = corr_average_grade)
+
+# Graph
+ggplot(corr_df, aes(x = reorder(Variable, Correlation), y = Correlation)) + 
+  geom_bar(stat = "identity", fill = "lightblue") + 
+  coord_flip() +  # Para mejor visualización
+  labs(title = "Correlación de Variables con Average Grade",
+       x = "Predictoras",
+       y = "Coeficiente de Correlación") +
+  theme_minimal()
+
+```
+With this graph we identify which variables have the strongest relationship with 
+our target. These include admission_grade, health_sciences, prev_grade, 
+avg_evaluations, management_business, social_sciences_humanities, prev_highe, 
+app_transfer_coursechange, attendance_Daytime, and mother_higher. This 
+relationships have theoretical and logical sense
+
+Basing on the previously identified as more relevant variables we will try to 
+build our initial multiple lineal model.
+
+```{r}
+
+set.seed(123)
+
+lm_model <- lm(average_grade ~ admission_grade + health_sciences + prev_grade + 
+                 avg_evaluations + management_business +  
+                 social_sciences_humanities + age_enrollment + 
+                 app_transfer_coursechange + attendance_Daytime +  
+                 mother_higher, data = training)
+
+summary(lm_model)
+
+```
+
+The multiple linear regression model explains 26.99% of the variance in 
+average_grade (R² = 0.2699), with an adjusted R² of 0.2661, indicating that while 
+some predictors are significant, the model does not capture all the variation in 
+student performance. Most of our selected variables are highly significant.
+
+We can highlight some observations. Higher admission grades lead to better 
+academic performance. Moreover, students in health sciences, those with higher 
+previous education, and those with higher-educated mothers tend to perform better. 
+On the contrary, more evaluations correlate with lower grades. The same way, 
+students in fields like management and business or social sciences and humanities 
+are associated with lower average grades. There is no strong evidence that daytime 
+attendance impacts performance.
+
+Evaluating normality of the residuals
+
+```{r}
+
+qqnorm(resid(lm_model))  
+
+```
+Our residuals are normally distributed.
+
+Let's try another model. The previous one focused on individual characteristics, 
+so now we will include variables related to the economical context and their 
+academic specialization.
+ 
+```{r}
+
+set.seed(123)
+lm_model2 <- lm(average_grade ~  avg_evaluations+ avg_enrolled + arts_media_comm 
+                + agriculture_env + health_sciences + engineering_tech + 
+                  app_transfer_coursechange + app_transfer_coursechange + 
+                  app_regular  + gdp + unemployment_rate + age_enrollment + 
+                  admission_grade + prev_grade + mother_higher, data = training)
+
+summary(lm_model2)
+```
+This model performs better, having an adjusted R-squared of 0.3378 and being 
+most of the variables included significant.
+
+Next, we will aplly some methods for improving model accuracy by adjusting 
+variable selection efficiently. This procedures will help us to identify the 
+most relevant variables while discarding the less informative ones.
+
+```{r}
+
+# forward based on p-value
+ols_step_forward_p(lm_model2) 
+plot(ols_step_forward_p(lm_model2))
+
+# forward based on AIC
+ols_step_forward_aic(lm_model2) 
+plot(ols_step_forward_aic(lm_model2))
+
+# stepwise AIC
+ols_step_both_aic(lm_model2) 
+```
+The three methods select the same variables. This pattern is indicative that 
+these variables have a stronger impact on the prediction of the target variable 
+average_grade, which aligns with our intuition about the factors affecting 
+academic performance.
+
+```{r}
+set.seed(123)
+linFit <- lm(average_grade ~ admission_grade + health_sciences+ avg_evaluations 
+             + avg_enrolled + agriculture_env + arts_media_comm + gdp + 
+               unemployment_rate, data=training)
+summary(linFit)
+```
+This models works a bit worse but give us valuable information about the fact 
+that these seem to be the most explanatory variables when trying to understand 
+the differences in the average grades among students.
+
+## Prediction
+
+The second goal was trying to predict. Consequently, we are going to evaluate 
+our three linear regression models on the testing set to compare their 
+performance. 
+
+```{r}
+
+# Creating a DataFrame to store predictions and real values
+test_results <- data.frame(
+  observed = testing$average_grade)
+
+# Storing predictions of our models
+test_results$lm1 <- predict(lm_model, newdata = testing)
+test_results$lm2 <- predict(lm_model2, newdata = testing)
+test_results$linFit <- predict(linFit, newdata = testing)
+
+# Evaluating each model in the testing set
+metrics_lm1 <- postResample(pred = test_results$lm1, obs = test_results$observed)
+metrics_lm2 <- postResample(pred = test_results$lm2, obs = test_results$observed)
+metrics_linFit <- postResample(pred = test_results$linFit, obs = test_results$observed)
+
+# Results
+cat("\n🔹 lm_model:\n")
+print(metrics_lm1)
+cat("\n🔹 lm_model2:\n")
+print(metrics_lm2)
+cat("\n🔹 linFit:\n")
+print(metrics_linFit)
+
+```
+lm_model2 appears to be the best model based on its lower RMSE and MAE values, 
+as well as the higher R-squared compared to the other models. However, the 
+improvements are relatively small between the models, suggesting that they all 
+perform similarly but with slight differences in accuracy.
+
+### Statistical learning tools
+
+We will first explore Statistical Learning Tools to establish a solid foundation. 
+We will perform a variety of regression techniques with which we aim to refine 
+our model selection process and improve the accuracy of our predictions.
+
+```{r}
+
+ctrl <- trainControl(method = "repeatedcv", 
+                     number = 5, repeats = 1)
+
+```
+
+
+#### Baseline Model in multiple linear regression
+
+Next, we will create a Benchmark model which will be used as a reference for the 
+rest of the models
+
+```{r}
+
+mean(training$average_grade)
+
+# This is equivalent to
+benchFit <- lm(average_grade ~ 1, data=training)
+predictions <- predict(benchFit, newdata=testing)
+RMSE_benchmark  <- sqrt(mean((predictions - testing$average_grade)^2))
+
+cat("Benchmark RMSE:", round(RMSE_benchmark, 4), "\n")
+
+```
+Our baseline model predicts the same value, which is the mean of the target, for 
+all observations, that is, 12.79164. Its RMSE is 1.229268, indicating the average 
+deviation of the predictions from the actual values in the test set.
+
+#### Foward regression
+
+Let's try to enhance lm_model2 with forward regression. We will store it as 
+model_formula.
+
+```{r}
+
+unregister_dopar <- function() {
+  env <- foreach:::.foreachGlobals
+  rm(list=ls(name=env), pos=env)
+}
+unregister_dopar()
+
+model_formula <- average_grade ~ avg_evaluations + avg_enrolled + 
+    arts_media_comm + agriculture_env + health_sciences + engineering_tech + 
+    app_transfer_coursechange + app_transfer_coursechange + app_regular + 
+    gdp + unemployment_rate + age_enrollment + admission_grade + 
+    prev_grade + mother_higher
+
+set.seed(123)
+forward_model <- train(
+  model_formula, 
+  data = training, 
+  method = "leapForward",  # Forward Selection en `caret`
+  preProc = c("scale", "center"),  # Normaliza los datos
+  tuneGrid = expand.grid(nvmax = 4:15),  # Busca entre 4 y 15 variables
+  trControl = ctrl
+)
+
+# Show results
+print(forward_model)
+
+# Graficar RMSE vs. Número de predictores
+plot(forward_model)
+
+```
+As the number of predictors increased, the RMSE slightly decreased, showing 
+improvement in the model's predictive accuracy. The model with 14 predictors had 
+the smallest RMSE of 0.9737, the highest R-squared value of 0.3270, and an MAE 
+of 0.7694, suggesting that adding more variables led to a better fit to the data. 
+The results suggest that incorporating all 14 predictors provided the best 
+balance between model accuracy and complexity.
+
+#### Backward regression
+
+```{r}
+set.seed(123)
+backward_model <- train(
+  model_formula, 
+  data = training, 
+  method = "leapBackward",  # Backward Selection en `caret`
+  preProc = c("scale", "center"),  # Normaliza los datos
+  tuneGrid = expand.grid(nvmax = 4:15),  # Busca entre 4 y 15 variables
+  trControl = ctrl
+)
+
+# Mostrar resultados
+print(backward_model)
+
+# Graficar RMSE vs. Número de predictores
+plot(backward_model)
+
+```
+Similarly to the forward results, using backward regression we reach a minimum 
+RMSE value of 0.9692 with 14 predictors. The R-squared value continued to improve 
+with more predictors, reaching 0.3327 at the final model, while MAE slightly 
+decreased.
+
+#### Stepwise regression
+```{r}
+set.seed(123)
+stepwise_model <- train(
+  model_formula, 
+  data = training, 
+  method = "leapSeq",  # Stepwise Selection en `caret`
+  preProc = c("scale", "center"),  # Normaliza los datos
+  tuneGrid = expand.grid(nvmax = 4:15),  # Busca entre 4 y 15 variables
+  trControl = ctrl
+)
+
+# Mostrar resultados
+print(stepwise_model)
+
+# Graficar RMSE vs. Número de predictores
+plot(stepwise_model)
+
+```
+With stepwise regression the optimal model was obtained with 12 predictors, which 
+yielded the lowest RMSE value of 0.9686. The model also showed a steady 
+improvement in R-squared, reaching 0.3333.
+
+Now we will evaluate and compare the performance of three different variable 
+selection methods on our linear regression model. For each model, we make 
+predictions using the testing set and then assess their accuracy.
+
+```{r}
+
+set.seed(123)
+# Creating a DataFrame to store observations and predictions
+test_results <- data.frame(observed = testing$average_grade)
+
+# Making predictions
+test_results$fw <- predict(forward_model, newdata = testing)
+test_results$bw <- predict(backward_model, newdata = testing)
+test_results$sw <- predict(stepwise_model, newdata = testing)
+
+# Evaluating each model
+metrics_fw <- postResample(pred = test_results$fw, obs = test_results$observed)
+metrics_bw <- postResample(pred = test_results$bw, obs = test_results$observed)
+metrics_sw <- postResample(pred = test_results$sw, obs = test_results$observed)
+
+# Show metrics
+cat("\n🔹 Forward Selection Metrics:\n")
+print(metrics_fw)
+cat("\n🔹 Backward Selection Metrics:\n")
+print(metrics_bw)
+cat("\n🔹 Stepwise Selection Metrics:\n")
+print(metrics_sw)
+
+```
+Forward and Backward selection techniques provide very similar and slightly 
+better performance compared to Stepwise selection, making them more favorable in 
+this case.
+
+#### Lasso regression
+
+We proceed to apply regularization method techniques, starting with Lasso.
+
+```{r}
+
+set.seed(123)
+# Defining grid
+lasso_grid <- expand.grid(fraction = seq(0.01, 1, length = 100))
+
+# Entrenar el modelo Lasso
+set.seed(123)
+lasso_tune <- train(model_formula, data = training,
+                    method = "lasso",
+                    preProc = c("scale", "center"), 
+                    tuneGrid = lasso_grid,
+                    trControl = ctrl)
+
+# Graficar el efecto de lambda en el RMSE
+plot(lasso_tune)
+
+# Best lamda
+print(lasso_tune$bestTune)
+
+# Crear DataFrame para almacenar predicciones y valores reales
+test_results <- data.frame(
+  observed = testing$average_grade,  # Valores reales
+  lasso = predict(lasso_tune, newdata = testing)  # Predicciones del modelo
+)
+
+# Evaluar el rendimiento del modelo
+metrics_lasso <- postResample(pred = test_results$lasso, obs = test_results$observed)
+print(metrics_lasso)
+
+```
+The Lasso model with the best lambda value (0.95) improves only very slightly the 
+RMSE and Rsquared compared to models without regularization. In general we are 
+not having good results
+
+#### Ridge regression
+
+```{r}
+
+ridge_grid <- expand.grid(lambda = seq(0, .1, length = 100))
+
+# Training Ridge
+set.seed(123)
+ridge_tune <- train(model_formula, data = training,
+                    method = "ridge",
+                    preProc = c("scale", "center"), 
+                    tuneGrid = ridge_grid,
+                    trControl = ctrl)
+# Graph
+plot(ridge_tune)
+
+# Best lamda
+print(ridge_tune$bestTune)
+
+# DataFrame to store predictions and real values
+test_results <- data.frame(
+  observed = testing$average_grade,  
+  ridge = predict(ridge_tune, newdata = testing))  
+
+# Performance metrics
+metrics_ridge <- postResample(pred = test_results$ridge, obs = test_results$observed)
+print(metrics_ridge)
+
+```
+We obtain almost the same as with Lasso.
+
+#### Elastic Net regression
+
+```{r}
+
+elastic_grid <- expand.grid(alpha = seq(0, 1, 0.1), lambda = seq(0, .1, 0.01))
+
+set.seed(123)
+elastic_tune <- train(model_formula, data = training,
+                     method = "glmnet",
+                     preProc = c("scale", "center"),
+                     tuneGrid = elastic_grid,
+                     trControl = ctrl)
+
+plot(elastic_tune)
+
+print(elastic_tune$bestTune)
+
+test_results <- data.frame(
+  observed = testing$average_grade, 
+  elastic = predict(elastic_tune, newdata = testing))
+
+metrics_elastic <- postResample(pred = test_results$elastic, 
+                                obs = test_results$observed)
+print(metrics_elastic)
+
+```
+We also have almost the same performance with Elastic Net. 
+
+In general, all the models tested have performed moderately, with results 
+indicating a fair amount of prediction error and limited explanatory power, as 
+shown by relatively low R-squared values and RMSE. This could be due to several 
+factors, such as the complexity of the data or the limitations when using 
+traditional statistical models. Moreover, the linear nature of the models might 
+not be capturing all the non-linear relationships within the data.
+
+### Machine Learning
+
+We will now transition to machine learning techniques, which are better equipped 
+to handle complex relationships and interactions in the data. These methods may 
+offer improvements in prediction accuracy.
+
+#### k-Nearest Neighbors (k-NN)
+
+```{r}
+
+set.seed(123)
+# Defining KNN
+knn_tune <- train(average_grade ~ ., 
+                  data = training,
+                  method = "kknn",   
+                  preProc = c('scale', 'center'),
+                  tuneGrid = data.frame(kmax = c(5, 10, 15, 20), 
+                                        distance = 2, kernel = 'optimal'),
+                  trControl = ctrl)
+
+# Mostrar los resultados del tuning
+print(knn_tune)
+plot(knn_tune)
+
+# Hacer predicciones en el conjunto de prueba
+test_results$knn <- predict(knn_tune, testing)
+
+# Evaluar el modelo KNN
+knn_metrics <- postResample(pred = test_results$knn, obs = testing$average_grade)
+print(knn_metrics)
+
+```
+The optimal model was selected with kmax = 20, which means the model considers 
+the average of the 20 nearest neighbors for each prediction. The metrics 
+obtained were the worst up to the moment.
+
+#### Random Forest
+
+```{r}
+
+set.seed(123)
+# Define the model
+rf_tune <- train(average_grade ~ ., 
+                 data = training,
+                 method = "rf",
+                 preProc = c('scale', 'center'),
+                 trControl = ctrl,
+                 ntree = 100, 
+                 tuneGrid = expand.grid(mtry = c(1, 3, 5, 7)),
+                 importance = TRUE) 
+
+# Results
+print(rf_tune)
+plot(rf_tune)
+
+# Predictions on testing set
+test_results$rf <- predict(rf_tune, testing)
+
+# Evaluation
+rf_metrics <- postResample(pred = test_results$rf, obs = testing$average_grade)
+print(rf_metrics)
+
+# Visualization
+varImpPlot(rf_tune$finalModel)
+
+```
+
+Random Forest performed better than earlier models, with lower RMSE and higher 
+R-squared. The best model was selected with mtry = 7, meaning the model will 
+consider 7 features at each split of the decision tree. This one appears to be 
+one of the better-performing models so far (RMSE = 1.0133870 and Rsquared = 
+0.3255387), although it doesn't predict very well either.
+
+#### Decision Tree
+
+```{r}
+
+set.seed(123)
+# Defining model
+dt_tune <- train(average_grade ~ ., 
+                 data = training,
+                 method = "rpart",
+                 preProc = c('scale', 'center'),
+                 tuneGrid = expand.grid(cp = seq(0.001, 0.05, by = 0.005)),
+                 trControl = ctrl)
+
+# Results
+print(dt_tune)
+plot(dt_tune)
+
+# Predictions
+test_results$dt <- predict(dt_tune, testing)
+
+# Evaluation
+dt_metrics <- postResample(pred = test_results$dt, obs = testing$average_grade)
+print(dt_metrics)
+
+```
+The Decision Tree performs worse.
+
+#### Gradient Boosting
+
+```{r}
+
+set.seed(123)
+# Definir modelo Gradient Boosting
+xgb_tune <- train(average_grade ~ ., 
+                  data = training,
+                  method = "xgbTree",
+                  preProc = c('scale', 'center'),
+                  trControl = ctrl,
+                  tuneGrid = expand.grid(
+                    nrounds = c(5, 100),  # Número de árboles PONIA 500, 1000
+                    max_depth = c(3, 5, 7),  # Profundidad máxima del árbol
+                    eta = c(0.01, 0.1, 0.3),  # Tasa de aprendizaje
+                    gamma = c(0, 1, 3),  # Reducción mínima de pérdida
+                    colsample_bytree = c(0.8, 1),  # Fracción de características usadas
+                    min_child_weight = c(1, 3),  # Peso mínimo de la instancia hija
+                    subsample = c(0.8, 1)  # Tasa de muestreo
+                  ))
+
+# Mostrar resultados del tuning
+print(xgb_tune)
+plot(varImp(xgb_tune, scale = F), scales = list(y = list(cex = .95)))
+
+# Hacer predicciones en el conjunto de prueba
+test_results$xgb <- predict(xgb_tune, testing)
+
+# Evaluar el modelo Gradient Boosting
+xgb_metrics <- postResample(pred = test_results$xgb, obs = testing$average_grade)
+print(xgb_metrics)
+
+```
+
+The Gradient Boosting model outperforms others in terms of predictive accuracy 
+and will be used as the final model for our prediction task. This aligns with 
+the power of machine learning to capture complex relationships in data. Its RMSE 
+(0.984) is relatively lower compared to other models, indicating that it makes 
+predictions with smaller errors. Its R-squared (0.359) means that the model 
+explains around 35.9% of the variance in average_grade, which is better than 
+many of the other models we tested. On its part, the MAE (0.735) is also lower. 
+
+The model identifies academic performance metrics (average evaluations, 
+admission grades, and prior grades) as the strongest predictors of outcomes, 
+aligning with expectations in educational models. Socioeconomic factors like GDP 
+and unemployment rates show moderate influence, highlighting the role of broader 
+economic conditions. Demographic variables such as age at enrollment and parental 
+education (e.g., mother's higher education) also contribute meaningfully. In 
+contrast, variables related to some maternal occupations or special needs show 
+negligible impact. 
+
+#### Neural Network
+
+```{r}
+set.seed(123)
+# Definir la grilla de hiperparámetros (ajustar número de neuronas)
+nn_grid <- expand.grid(size = c(2, 4, 6),  # Número de neuronas en la capa oculta
+                       decay = c(0.1, 0.01))  # Regularización para evitar overfitting
+
+# Entrenar la red neuronal
+set.seed(123)
+nn_tune <- train(average_grade ~ ., 
+                 data = training, 
+                 method = "nnet",
+                 preProc = c('scale', 'center'),
+                 tuneGrid = nn_grid,
+                 maxit = 200,  # Iteraciones limitadas para evitar largos tiempos
+                 trControl = ctrl,
+                 linout = TRUE)  # Salida lineal porque estamos haciendo regresión
+
+# Ver resultados
+print(nn_tune)
+plot(nn_tune)
+
+# Hacer predicciones en el conjunto de prueba
+test_results$nn <- predict(nn_tune, testing)
+
+# Evaluar el modelo
+nn_metrics <- postResample(pred = test_results$nn, obs = testing$average_grade)
+print(nn_metrics)
+```
+This last model predicts worse than Gradient Boosting.
+
+Let's put together the results obtained in this part.
+
+```{r}
+# Crear un data frame con los resultados de cada modelo
+model_comparison <- data.frame(
+  Model = c("KNN", "Random Forest", "Decision Tree", 
+            "XGBoost", "Neural Network"),
+  RMSE = c(knn_metrics[1], rf_metrics[1], dt_metrics[1], 
+           xgb_metrics[1], nn_metrics[1]),
+  R2 = c(knn_metrics[2], rf_metrics[2], dt_metrics[2], 
+         xgb_metrics[2], nn_metrics[2]),
+  MAE = c(knn_metrics[3], rf_metrics[3], dt_metrics[3], 
+          xgb_metrics[3], nn_metrics[3])
+)
+
+# Mostrar tabla de comparación
+print(model_comparison)
+```
+
+#### Ensamble model
+
+To conclude our analysis, we will create an ensemble model combining the three 
+best-performing models:Gradient Boosting, Random Forest and Stepwise Regression. 
+The goal of this ensemble is to leverage the strengths of each model and see if 
+the combination improves the overall prediction accuracy.
+
+```{r}
+# Hacer predicciones individuales
+test_results$stepwise <- predict(stepwise_model, testing)
+test_results$rf <- predict(rf_tune, testing)
+test_results$xgb <- predict(xgb_tune, testing)
+
+# Hacer el ensemble promediando las predicciones
+test_results$ensemble_avg <- (test_results$stepwise + test_results$rf + 
+                                test_results$xgb) / 3
+
+# Evaluar el modelo ensemble
+ensemble_metrics <- postResample(pred = test_results$ensemble_avg, 
+                                 obs = testing$average_grade)
+print(ensemble_metrics)
+
+```
+The ensemble method, in this case, does not provide a major improvement. 
+Gradient Boosting alone is better
+
+As a final conclusion for this part we can say that it seems that the variables 
+in the dataset do not fully explain the variability average grade. Our model's 
+performance has been limited in this second part, even if we tried several 
+techniques, so maybe the features are not the most relevant or don't capture the 
+underlying factors that influence students' average grade during their first 
+year at Univesity.
+
+# Bibliography:
+
+- Davis-Kean, P. E. (2005). The influence of parent education and family income 
+on child achievement: The indirect role of parental expectations and the home 
+environment. Journal of Family Psychology, 19(2), 294–304.
+- Fan, X., & Chen, M. (2001). Parental involvement and students' academic 
+achievement: A meta-analysis. Educational Psychology Review, 13(1), 1–22. 
+- Realinho, V., Vieira Martins, M., Machado, J., & Baptista, L. (2021). Predict 
+Students' Dropout and Academic Success [Dataset]. UCI Machine Learning Repository.
+
